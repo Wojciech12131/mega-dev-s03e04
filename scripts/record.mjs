@@ -1,14 +1,13 @@
 // Records the board in use (open-board, watch-board, ack-incident) against a real URL, with Playwright video.
 // The recording script alone adds an overlay: elapsed mm:ss on the video's own clock, the page origin, the build
 // sha, a visible pointer, and captions. Event times, the ack receipt and the sha go to recordings/<name>.json.
-// Usage: node scripts/record.mjs <board url> <name> [--no-ack]
+// Usage: node scripts/record.mjs <board url> <name>
 import { chromium } from 'playwright';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [url, name = 'run'] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-const noAck = process.argv.includes('--no-ack');
-if (!url) throw new Error('usage: node scripts/record.mjs <board url> <name> [--no-ack]');
+if (!url) throw new Error('usage: node scripts/record.mjs <board url> <name>');
 const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const outDir = join(root, 'recordings');
 mkdirSync(outDir, { recursive: true });
@@ -45,8 +44,8 @@ const overlay = () => {
 
 const browser = await chromium.launch();
 const context = await browser.newContext({
-  viewport: { width: 1100, height: 700 },
-  recordVideo: { dir: outDir, size: { width: 1100, height: 700 } },
+  viewport: { width: 1280, height: 800 },
+  recordVideo: { dir: outDir, size: { width: 1280, height: 800 } },
   locale: 'pl-PL',
   timezoneId: 'Europe/Warsaw',
 });
@@ -90,44 +89,63 @@ try {
   await caption(`watch-board: ${landed} arrived at the top without a reload.`);
   await page.waitForTimeout(3500);
 
-  // ack-incident
-  let receipt = null;
-  if (!noAck) {
-    const target = page.locator('[data-testid="incident-row"]').nth(2);
-    const id = await target.getAttribute('data-id');
-    await caption(`ack-incident: on-call takes ${id}.`);
-    const box = await target.locator('[data-testid="ack"]').boundingBox();
-    await glide(box.x + box.width / 2, box.y + box.height / 2);
-    // aim and click on the row that is under the pointer right now
-    const under = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="incident-row"]')?.dataset.id, [box.x + box.width / 2, box.y + box.height / 2]);
-    if (under !== id) note('ack-incident: target moved before click', { target: id, under });
-    await page.locator(`[data-testid="incident-row"][data-id="${id}"] [data-testid="ack"]`).click();
-    note('ack-incident: Ack clicked', { id });
-    await page.waitForSelector(`[data-testid="incident-row"][data-id="${id}"] [data-testid="acked"]`, { timeout: 10000 });
-    const reply = acks.find((a) => a.id === id);
-    receipt = reply?.receipt ?? null;
-    note('ack-incident: row marked acked', { id, ackedAt: reply?.ackedAt, receipt: receipt ? receipt.slice(0, 12) + '…' : null });
-    await page.locator(`[data-testid="incident-row"][data-id="${id}"]`).evaluate((n) => n.classList.add('rec-hl'));
-    await caption(`ack-incident: ${id} acked (✓ acked) — the API answered with a receipt.`);
-    await page.waitForTimeout(4500);
-  }
-
-  // the product question: the pointer stays still over an Ack; a new incident lands; the Ack under it changes owner
-  await caption('Watch the pointer: it stays still over the top row\'s Ack while the board refreshes.');
-  const top = await topId();
-  const box = await page.locator(`[data-testid="incident-row"][data-id="${top}"] [data-testid="ack"]`).boundingBox();
-  const px = box.x + box.width / 2, py = box.y + box.height / 2;
+  // ack-incident after SCHED-4515, clicked like a person: aim at a row, click that spot while the board goes on
+  // moving. A row only opens its panel; the panel names the incident; Ack lives in the panel.
+  await page.evaluate(() => document.querySelectorAll('.rec-hl').forEach((n) => n.classList.remove('rec-hl')));
+  const meantRow = page.locator('[data-testid="incident-row"]').nth(1);
+  const meant = await meantRow.getAttribute('data-id');
+  await meantRow.evaluate((n) => n.classList.add('rec-hl'));
+  await caption(`ack-incident: on-call reads ${meant} and goes for its row.`);
+  const box = await meantRow.boundingBox();
+  const px = box.x + box.width * 0.45, py = box.y + box.height / 2;
   await glide(px, py);
-  note('shift: pointer resting on Ack of top row', { aimedAt: top });
-  await page.waitForFunction((id) => document.querySelector('[data-testid="incident-row"]')?.dataset.id !== id, top, { timeout: 30000, polling: 50 });
-  const now = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="incident-row"]')?.dataset.id, [px, py]);
-  note('shift: new incident landed; the Ack under the still pointer now belongs to another incident', { aimedAt: top, underPointer: now });
-  await caption(`Pointer did not move: it aimed at ${top}'s Ack, now it is on ${now}'s Ack. A click here acks the wrong incident.`);
+  note('ack-incident: pointer on the row on-call means', { meant });
+  let ackCount = acks.length;
+  await page.waitForFunction((id) => document.querySelector('[data-testid="incident-row"]')?.dataset.id !== id,
+    await topId(), { timeout: 30000, polling: 'raf' });
+  const landed2 = await topId();
+  await page.mouse.click(px, py); // the same spot on screen, as a person's hand would
+  note('ack-incident: new incident landed as the click went in', { meant, landed: landed2 });
+  await page.waitForSelector('[data-testid="incident-panel"]:visible', { timeout: 5000 });
+  const firstPanel = (await page.textContent('[data-testid="incident-panel"] h2')).trim();
+  const ackedByWrongClick = acks.length - ackCount;
+  note('ack-incident: panel opened', { meant, panelNames: firstPanel, acksSent: ackedByWrongClick });
+  if (firstPanel !== meant) {
+    await caption(`The row moved as they clicked: the panel names ${firstPanel}, not ${meant}. Nothing was acked.`);
+    await page.waitForTimeout(4000);
+    await caption(`On-call reads the panel and picks ${meant} again.`);
+    const again = await page.locator(`[data-testid="incident-row"][data-id="${meant}"]`).boundingBox();
+    await glide(again.x + again.width * 0.45, again.y + again.height / 2, 20);
+    await page.mouse.click(again.x + again.width * 0.45, again.y + again.height / 2);
+    await page.waitForTimeout(300);
+  }
+  const panelNow = (await page.textContent('[data-testid="incident-panel"] h2')).trim();
+  note('ack-incident: panel names', { meant, panelNames: panelNow });
+  await caption(`The panel names ${panelNow}. Ack is in the panel.`);
+  await page.waitForTimeout(2500);
+  const ab = await page.locator('[data-testid="panel-ack"]').boundingBox();
+  await glide(ab.x + ab.width / 2, ab.y + ab.height / 2, 20);
+  ackCount = acks.length;
+  const ackAt = at();
+  await page.mouse.click(ab.x + ab.width / 2, ab.y + ab.height / 2);
+  await page.waitForSelector(`[data-testid="incident-row"][data-id="${meant}"] [data-testid="acked"]`, { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(300);
+  const reply = acks.slice(ackCount)[0] ?? null;
+  note('ack-incident: panel Ack', { expected: meant, got: reply?.id, at: ackAt, ackedAt: reply?.ackedAt, receipt: reply?.receipt ? reply.receipt.slice(0, 12) + '…' : null });
+  await page.evaluate(() => document.querySelectorAll('.rec-hl').forEach((n) => n.classList.remove('rec-hl')));
+  if (reply?.id) await page.locator(`[data-testid="incident-row"][data-id="${reply.id}"]`).evaluate((n) => n.classList.add('rec-hl'));
+  await caption(reply?.id === meant
+    ? `expected ${meant}, got ${reply.id}: the ack went to the incident on-call meant.`
+    : `expected ${meant}, got ${reply?.id ?? 'no ack'}.`);
   await page.waitForTimeout(6000);
   await caption('');
   await page.waitForTimeout(800);
 
-  writeFileSync(join(outDir, `${name}.json`), JSON.stringify({ url, sha, recStartUtc: new Date(recStart).toISOString(), events, acks, receipt }, null, 2));
+  writeFileSync(join(outDir, `${name}.json`), JSON.stringify({
+    url, sha, recStartUtc: new Date(recStart).toISOString(), events, acks,
+    ack: { expected: meant, got: reply?.id ?? null, at: ackAt, ackedAt: reply?.ackedAt ?? null, receipt: reply?.receipt ?? null,
+      wrongPanel: firstPanel !== meant ? firstPanel : null, acksFromWrongClick: ackedByWrongClick, landed: landed2 },
+  }, null, 2));
 } finally {
   const video = page.video();
   await context.close();

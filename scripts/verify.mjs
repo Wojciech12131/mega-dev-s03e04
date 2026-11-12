@@ -96,16 +96,60 @@ try {
     check('R1/R4 new incident at top without reload', await page.evaluate(() => window.__noReload === true));
     check('R4 refresh within ~2 s', waited <= 2600, `${waited} ms`);
     const keep = await page.$('[data-testid="incident-row"][data-id="INC-1"]');
-    await page.click('[data-testid="incident-row"][data-id="INC-2"] [data-testid="ack"]');
+    check('SCHED-4515 rows have no Ack button', (await page.$('[data-testid="incident-row"] [data-testid="ack"]')) === null);
+    check('SCHED-4515 panel hidden until a row is picked', !(await page.isVisible('[data-testid="incident-panel"]')));
+    await page.click('[data-testid="incident-row"][data-id="INC-2"]');
+    const panelText = await page.textContent('[data-testid="incident-panel"]');
+    check('SCHED-4515 row click opens the panel naming that incident only', panelText.includes('INC-2') && !/INC-(1|3)\b/.test(panelText), panelText);
+    check('SCHED-4515 a row click sends no ack', state.acks.length === 0, JSON.stringify(state.acks));
+    await page.click('[data-testid="panel-ack"]');
     await page.waitForSelector('[data-testid="incident-row"][data-id="INC-2"] [data-testid="acked"]');
-    check('R2 ack calls api with that id and the latest cursor', state.acks.length === 1 && state.acks[0].id === 'INC-2' && /^c\d+$/.test(state.acks[0].cursor), JSON.stringify(state.acks));
+    check('R2 panel Ack calls api with that id and the latest cursor', state.acks.length === 1 && state.acks[0].id === 'INC-2' && /^c\d+$/.test(state.acks[0].cursor), JSON.stringify(state.acks));
+    check('R2 panel shows acked, its Ack gone', !(await page.isVisible('[data-testid="panel-ack"]')) && /acked/.test(await page.textContent('[data-testid="incident-panel"]')));
     const callsBefore = state.calls;
+    state.incidents = [inc('INC-4', 0), ...state.incidents];
     await page.waitForTimeout(4500);
     check('R4 kept refreshing (2+ calls in 4.5 s)', state.calls - callsBefore >= 2, `${state.calls - callsBefore}`);
+    check('panel stays on its incident while new incidents land', (await page.textContent('[data-testid="incident-panel"] h2')).trim() === 'INC-2');
     check('R2 acked mark survives refresh', await page.isVisible('[data-testid="incident-row"][data-id="INC-2"] [data-testid="acked"]'));
     check('rows updated in place (same DOM node after refresh)', await keep.evaluate((n) => n.isConnected));
-    check('acked row has no Ack button', (await page.$('[data-testid="incident-row"][data-id="INC-2"] [data-testid="ack"]')) === null);
-    check('other rows keep their Ack button', await page.isVisible('[data-testid="incident-row"][data-id="INC-1"] [data-testid="ack"]'));
+    await page.keyboard.press('Escape');
+    check('Escape closes the panel', !(await page.isVisible('[data-testid="incident-panel"]')));
+    await page.focus('[data-testid="incident-row"][data-id="INC-1"]');
+    await page.keyboard.press('Enter');
+    check('Enter on a focused row opens its panel', (await page.textContent('[data-testid="incident-panel"] h2')).trim() === 'INC-1');
+    await context.close();
+  }
+  // The step-1 race, clicked the way the replay clicks: aim at a row, a new incident lands, click the same spot.
+  {
+    const { page, state, context } = await open(browser, {
+      incidents: [inc('INC-3', 5), inc('INC-2', 10), inc('INC-1', 15)],
+      contextOptions: { viewport: { width: 1280, height: 800 } },
+    });
+    await page.waitForSelector('[data-testid="incident-row"]');
+    await page.evaluate(() => {
+      window.__removed = 0;
+      new MutationObserver((rs) => { for (const r of rs) for (const n of r.removedNodes) if (n.nodeType === 1 && n.matches?.('[data-testid="incident-row"]')) window.__removed++; })
+        .observe(document, { childList: true, subtree: true });
+    });
+    const meant = 'INC-1';
+    const box = await page.locator(`[data-testid="incident-row"][data-id="${meant}"]`).boundingBox();
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="incident-row"]')?.dataset.id, [x, y]);
+    check('panel column does not cover the rows at 1280x800', hit === meant, hit);
+    await page.mouse.move(x, y, { steps: 8 });
+    state.incidents = [inc('INC-9', 0), ...state.incidents];
+    await page.waitForFunction(() => document.querySelector('[data-testid="incident-row"]')?.dataset.id === 'INC-9', null, { timeout: 5000 });
+    await page.mouse.click(x, y);
+    const wrong = (await page.textContent('[data-testid="incident-panel"] h2')).trim();
+    check('race: the click lands on a moved row and opens the wrong panel', wrong !== meant, wrong);
+    check('race: the wrong click acks nothing', state.acks.length === 0, JSON.stringify(state.acks));
+    await page.locator(`[data-testid="incident-row"][data-id="${meant}"]`).click();
+    check('race: picking the intended row again names it in the panel', (await page.textContent('[data-testid="incident-panel"]')).includes(meant));
+    await page.click('[data-testid="panel-ack"]');
+    await page.waitForSelector(`[data-testid="incident-row"][data-id="${meant}"] [data-testid="acked"]`);
+    check('race: expected = got', state.acks.length === 1 && state.acks[0].id === meant, JSON.stringify(state.acks));
+    check('no incident row removed from the board during refreshes', (await page.evaluate(() => window.__removed)) === 0);
     await context.close();
   }
   // summary is text, not HTML
@@ -147,18 +191,6 @@ try {
     await page.waitForSelector('#status:not(.bad)', { timeout: 5000 });
     check('API error shown, then recovers without reload', true);
     await context.close();
-  }
-  // Product question: does the Ack under a still pointer change owner when an incident lands?
-  {
-    const { page, state, context } = await open(browser, { incidents: [inc('INC-2', 5), inc('INC-1', 10)] });
-    await page.waitForSelector('[data-testid="incident-row"]');
-    const box = await page.locator('[data-testid="incident-row"][data-id="INC-2"] [data-testid="ack"]').boundingBox();
-    const x = box.x + box.width / 2, y = box.y + box.height / 2;
-    await page.mouse.move(x, y);
-    state.incidents = [inc('INC-3', 0), ...state.incidents];
-    await page.waitForFunction(() => document.querySelector('[data-testid="incident-row"]')?.dataset.id === 'INC-3', null, { timeout: 5000 });
-    const under = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="incident-row"]')?.dataset.id, [x, y]);
-    console.log(`INFO pointer aimed at INC-2's Ack; after INC-3 landed it is over ${under}'s row`);
   }
 } finally {
   await browser.close();
