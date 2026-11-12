@@ -120,9 +120,11 @@ try {
   // New York (EST, -5) 11/11 22:03, month first.
   const at = '2026-11-12T03:03:00.000Z';
   for (const [zone, locale, expect] of [
-    ['Pacific/Auckland', 'en-NZ', /^12\/11,? (4:03 ?pm|16:03)/i],
+    ['Pacific/Auckland', 'en-NZ', /^12\/11,? (4:03\s?pm|16:03)/i], // not "04:03 pm": reads as 04:03
     ['Europe/Berlin', 'de-DE', /^12\.11\.,? 04:03/],
-    ['America/New_York', 'en-US', /^11\/11,? 10:03 ?PM/i],
+    ['America/New_York', 'en-US', /^11\/11,? 10:03\s?PM/i],
+    ['Europe/Warsaw', 'pl-PL', /^12\.11,? 04:03/],
+    ['Europe/London', 'en-GB', /^12\/11,? 03:03/],
   ]) {
     const { page, context } = await open(browser, {
       incidents: [{ ...inc('INC-T', 0), openedAt: at }],

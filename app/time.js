@@ -6,7 +6,8 @@ export function formatLocal(iso, locales = navigator.languages) {
   return new Intl.DateTimeFormat(locales, {
     day: '2-digit',
     month: '2-digit',
-    hour: '2-digit',
+    // 'numeric', not '2-digit': on 12-hour locales a padded "04:03 pm" reads as 04:03 at a glance.
+    hour: 'numeric',
     minute: '2-digit',
     timeZoneName: 'short',
   }).format(d);
