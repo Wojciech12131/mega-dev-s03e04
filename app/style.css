@@ -9,3 +9,17 @@ h1 { margin: 0; font-size: 22px; }
 .row.sev2 .sev { color: #a15c00; }
 .row time { color: #555; font-variant-numeric: tabular-nums; }
 footer { color: #777; font-size: 13px; }
+body { padding-bottom: 48px; }
+footer { position: fixed; left: 0; right: 0; bottom: 0; background: #fafafa; border-top: 1px solid #e5e5e5; }
+footer code { font-family: ui-monospace, monospace; }
+#status { color: #666; }
+#status.bad { color: #b00020; }
+.loader { display: flex; align-items: center; gap: 10px; padding: 16px 12px; color: #555; }
+.spinner { width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #555; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty { padding: 16px 12px; color: #555; }
+.row .action { min-width: 80px; text-align: right; }
+.row button { font: inherit; padding: 4px 12px; border: 1px solid #888; border-radius: 4px; background: #fff; cursor: pointer; }
+.row button:disabled { cursor: progress; opacity: 0.6; }
+.row .acked { color: #1b7f3b; font-weight: 600; }
+.row.sev3 .sev { color: #555; }
